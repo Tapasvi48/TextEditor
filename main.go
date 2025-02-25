@@ -1,138 +1,167 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"syscall"
-	"unsafe"
 
 	"golang.org/x/term"
 )
 
+func enableRawMode() (*term.State, error) {
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return nil, err
+	}
+	return oldState, nil
+}
+
+func restoreMode(oldState *term.State) {
+	_ = term.Restore(int(os.Stdin.Fd()), oldState)
+	fmt.Println("\nExiting...")
+	os.Exit(0)
+}
+
 type CursorPosition struct {
-	xCorr int
-	yCorr int
+	xCorr   int
+	yCorr   int
+	absPoss int
 }
 
 type Editor struct {
-	textContent    [][]rune
+	pt             *PieceTable
 	cursorPosition *CursorPosition
 }
 
 func NewEditor() *Editor {
 	return &Editor{
-		textContent: [][]rune{}, // Start with one empty line
+		pt: NewPieceTable(""),
 		cursorPosition: &CursorPosition{
-			xCorr: 0,
-			yCorr: 0,
+			xCorr:   0,
+			yCorr:   0,
+			absPoss: 0,
 		},
 	}
+
 }
 
-func (editor *Editor) InsertChar(char rune) {
-	y := editor.cursorPosition.yCorr
-	if len(editor.textContent) <= y {
-		editor.textContent = append(editor.textContent, []rune{})
+func (e *Editor) readKey() rune {
+	reader := bufio.NewReader(os.Stdin)
+	char, _, _ := reader.ReadRune()
+	return char
+}
+func (e *Editor) draw() {
+	fmt.Print("\x1b[2J") // Clear screen
+	fmt.Print("\x1b[H")  // Move cursor home
+	text := e.pt.GetText()
+	lines := bytes.Split([]byte(text), []byte("\n"))
+	for i := 0; i < len(lines); i++ {
+		if i == 0 {
+			fmt.Print("> ")
+		} else {
+			fmt.Print("  ")
+		}
+		fmt.Println(string(lines[i]))
 	}
-	editor.textContent[y] = append(editor.textContent[y], char)
-	// Move cursor forward
-	editor.cursorPosition.xCorr++
+	fmt.Printf("\x1b[%d;%dH", e.cursorPosition.yCorr+1, e.cursorPosition.xCorr+2)
 
 }
-
-func (editor *Editor) NewLine() {
-	editor.cursorPosition.yCorr++
-	editor.cursorPosition.xCorr = 0
-	editor.textContent = append(editor.textContent, []rune{})
-
-}
-
-func (editor *Editor) PrevLine() {
-	//merge this line with prev line
-	//in case of no line
-	y := editor.cursorPosition.yCorr
-	prevY := y - 1
-	prevLen := len(editor.textContent[prevY])
-	if len(editor.textContent[y]) == 0 {
-		editor.cursorPosition.yCorr = prevY
-		editor.cursorPosition.xCorr = prevLen
-		return
-	}
-
-	editor.textContent[prevY] = append(editor.textContent[prevY], editor.textContent[y]...)
-	editor.textContent = append(editor.textContent[:y], editor.textContent[y+1:]...)
-	editor.cursorPosition.yCorr = prevY
-	editor.cursorPosition.xCorr = prevLen
+func (e *Editor) insertChar(ch string) {
+	e.pt.InsertText(e.cursorPosition.absPoss, e.cursorPosition.yCorr, ch)
+	e.cursorPosition.xCorr++
+	e.cursorPosition.absPoss++
 
 }
-
-func (editor *Editor) Backspace() {
-
-	y := editor.cursorPosition.yCorr
-	x := editor.cursorPosition.xCorr
-	if x == 0 && y > 0 {
-		editor.PrevLine()
-		return
-	}
-
-	if y < 0 || y >= len(editor.textContent) || x <= 0 || x > len(editor.textContent[y]) {
-		return
-	}
-	editor.textContent[y] = append(editor.textContent[y][:x-1], editor.textContent[y][x:]...)
-	editor.cursorPosition.xCorr--
+func (e *Editor) newLine() {
 
 }
-
-func (editor *Editor) PrintScreen() {
-	cmd := exec.Command("clear")
-
-	cmd.Stdout = os.Stdout
-	cmd.Run()
-
-	for _, line := range editor.textContent {
-		fmt.Print(string(line) + "\r\n")
-	}
-
-	fmt.Printf("\033[%d;%dH", editor.cursorPosition.yCorr+1, editor.cursorPosition.xCorr+1)
-
-	// Move cursor to the correct position
+func (e *Editor) moveRight() {
 
 }
+func (e *Editor) moveLeft() {
 
+}
+func (e *Editor) backspace() {
+
+}
 func readKey() rune {
-	var buf [1]byte
-	syscall.Syscall(syscall.SYS_READ, 0, uintptr(unsafe.Pointer(&buf)), 1)
+	var buf [3]byte
+	n, err := syscall.Read(0, buf[:])
+	if err != nil {
+		return 0
+	}
 
-	return rune(buf[0])
+	if n == 1 {
+		return rune(buf[0])
+	}
+
+	if n == 3 && buf[0] == 0x1b && buf[1] == '[' {
+		switch buf[2] {
+		case 'A':
+			return '↑'
+		case 'B':
+			return '↓'
+		case 'C':
+			return '→'
+		case 'D':
+			return '←'
+		}
+	}
+
+	return 0
 }
-
 func main() {
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	oldState, err := enableRawMode()
+
 	if err != nil {
 		fmt.Println("Error enabling raw mode:", err)
 		return
 	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
+	defer restoreMode(oldState)
 
+	fmt.Println("Simple Text Editor (Press ESC twice to Exit)")
 	editor := NewEditor()
-
-	fmt.Println("Simple Text Editor (Press ESC to Exit)")
+	escPressed := false
+	needsRedraw := true // Initial draw
 
 	for {
-		editor.PrintScreen()
+		if needsRedraw {
+			editor.draw()
+			needsRedraw = false
+		}
+
 		key := readKey()
+		needsRedraw = true // Assume we need to redraw by default
 
 		switch key {
-		case 27: // ESC to exit
-			fmt.Println("\nExiting...")
-			return
-		case '\n', '\r': // Enter key
-			editor.NewLine()
-		case 8, 127:
-			editor.Backspace()
+		case 0x1b: // Escape
+			if escPressed {
+				restoreMode(oldState)
+			}
+			escPressed = true
+			needsRedraw = false // No visual change for ESC alone
+		case '↑':
+
+		case '↓':
+
+		case '→':
+			editor.moveRight()
+		case '←':
+			editor.moveLeft()
+		case 0x7f: // Backspace
+			editor.backspace()
+		case 0x0d: // Enter
+			editor.insertChar("\n")
 		default:
-			editor.InsertChar(key)
+			if key >= 32 && key <= 126 {
+				editor.insertChar(string(key))
+			} else {
+				needsRedraw = false
+			}
 		}
+
+		escPressed = false
 	}
 }
