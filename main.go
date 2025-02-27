@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"os"
 	"syscall"
@@ -19,7 +17,7 @@ func enableRawMode() (*term.State, error) {
 }
 
 func restoreMode(oldState *term.State) {
-	_ = term.Restore(int(os.Stdin.Fd()), oldState)
+	term.Restore(int(os.Stdin.Fd()), oldState)
 	fmt.Println("\nExiting...")
 	os.Exit(0)
 }
@@ -47,40 +45,111 @@ func NewEditor() *Editor {
 
 }
 
-func (e *Editor) readKey() rune {
-	reader := bufio.NewReader(os.Stdin)
-	char, _, _ := reader.ReadRune()
-	return char
-}
 func (e *Editor) draw() {
-	fmt.Print("\x1b[2J") // Clear screen
-	fmt.Print("\x1b[H")  // Move cursor home
-	text := e.pt.GetText()
-	lines := bytes.Split([]byte(text), []byte("\n"))
-	for i := 0; i < len(lines); i++ {
-		if i == 0 {
+	// Clear screen
+	fmt.Print("\033[2J\033[H")
+
+	// Get text and manually split it correctly
+	fullText := e.pt.GetText()
+
+	// Split text by newlines, ensuring we get all lines
+	bytes := fullText
+	fmt.Print("> ")
+	for _, b := range bytes {
+		if b == 10 {
+			fmt.Print("\r\n")
 			fmt.Print("> ")
 		} else {
-			fmt.Print("  ")
+			fmt.Print(string(b))
 		}
-		fmt.Println(string(lines[i]))
 	}
-	fmt.Printf("\x1b[%d;%dH", e.cursorPosition.yCorr+1, e.cursorPosition.xCorr+2)
 
+	// Print debug info with additional buffer info
+	fmt.Print("\n") // Extra space
+	fmt.Printf("DEBUG: Cursor(X:%d,Y:%d) |Cursor (%d)| Lines: %d | abs: %d\n|char at:%s",
+		e.cursorPosition.xCorr,
+		e.cursorPosition.yCorr,
+		e.cursorPosition.absPoss,
+		e.pt.GetCurrentLineLength(e.cursorPosition.yCorr),
+		e.cursorPosition.absPoss,
+		e.pt.CharAt(e.cursorPosition.absPoss-1))
+
+	// Print hex representation of a few characters to debug potential issues
+	// if len(fullText) > 0 {
+	// 	fmt.Print("First few chars (hex): ")
+	// 	for i := 0; i < min(10, len(fullText)); i++ {
+	// 		fmt.Printf("%02x ", fullText[i])
+	// 	}
+	// 	fmt.Println()
+	// }
+
+	// Position cursor for editing
+	fmt.Printf("\033[%d;%dH", e.cursorPosition.yCorr+1, e.cursorPosition.xCorr+3)
 }
+
+// Helper function
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (e *Editor) insertChar(ch string) {
-	e.pt.InsertText(e.cursorPosition.absPoss, e.cursorPosition.yCorr, ch)
+	e.pt.InsertText(e.cursorPosition.absPoss, ch)
 	e.cursorPosition.xCorr++
 	e.cursorPosition.absPoss++
-
 }
-func (e *Editor) newLine() {
 
-}
 func (e *Editor) moveRight() {
+	currLineLength := e.pt.GetCurrentLineLength(e.cursorPosition.yCorr)
+	// if e.cursorPosition.xCorr == currLineLength {
+	// 	if e.pt.NextLine(e.cursorPosition.yCorr, e.cursorPosition.absPoss) {
+	// 		e.cursorPosition.yCorr++
+	// 		e.cursorPosition.xCorr = 0
+	// 	}
+	// 	return
+
+	// }
+	if e.cursorPosition.xCorr == currLineLength-1 {
+		if e.pt.GetLineCount() > e.cursorPosition.yCorr {
+			e.cursorPosition.yCorr++
+			e.cursorPosition.xCorr = 0
+			return
+		} else {
+			return
+		}
+
+	}
+	e.cursorPosition.absPoss++
+	e.cursorPosition.xCorr++
+
+}
+func (e *Editor) moveUp() {
+
+}
+func (e *Editor) moveDown() {
 
 }
 func (e *Editor) moveLeft() {
+	if e.cursorPosition.xCorr == 0 {
+		if e.cursorPosition.yCorr > 0 {
+			e.cursorPosition.xCorr = e.pt.GetCurrentLineLength(e.cursorPosition.yCorr-1) - 1
+			e.cursorPosition.yCorr--
+			return
+		} else {
+			return
+		}
+
+	}
+	e.cursorPosition.xCorr--
+	e.cursorPosition.absPoss--
+}
+func (e *Editor) newLine() {
+	e.pt.InsertText(e.cursorPosition.absPoss, "\n")
+	e.cursorPosition.yCorr++
+	e.cursorPosition.xCorr = 0
+	e.cursorPosition.absPoss++
 
 }
 func (e *Editor) backspace() {
@@ -109,12 +178,13 @@ func readKey() rune {
 			return '←'
 		}
 	}
-
+	if n == 1 && buf[0] == 0x1b {
+		return 0x1b
+	}
 	return 0
 }
 func main() {
 	oldState, err := enableRawMode()
-
 	if err != nil {
 		fmt.Println("Error enabling raw mode:", err)
 		return
@@ -123,7 +193,7 @@ func main() {
 
 	fmt.Println("Simple Text Editor (Press ESC twice to Exit)")
 	editor := NewEditor()
-	escPressed := false
+
 	needsRedraw := true // Initial draw
 
 	for {
@@ -131,29 +201,23 @@ func main() {
 			editor.draw()
 			needsRedraw = false
 		}
-
 		key := readKey()
-		needsRedraw = true // Assume we need to redraw by default
-
+		needsRedraw = true
 		switch key {
-		case 0x1b: // Escape
-			if escPressed {
-				restoreMode(oldState)
-			}
-			escPressed = true
-			needsRedraw = false // No visual change for ESC alone
+		case 0x1b:
+			restoreMode(oldState)
+		case 0x0d:
+			editor.newLine()
 		case '↑':
-
+			editor.moveUp()
 		case '↓':
-
+			editor.moveDown()
 		case '→':
 			editor.moveRight()
 		case '←':
 			editor.moveLeft()
 		case 0x7f: // Backspace
 			editor.backspace()
-		case 0x0d: // Enter
-			editor.insertChar("\n")
 		default:
 			if key >= 32 && key <= 126 {
 				editor.insertChar(string(key))
@@ -162,6 +226,5 @@ func main() {
 			}
 		}
 
-		escPressed = false
 	}
 }
